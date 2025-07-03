@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "scrr-fx"
+version = "0.0.1"
+description = "Stream-Compensated Residual Representation Framework"
+authors = [{ name = "AI", email = "ai@example.com" }]
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.9"
+dependencies = [
+    "torch>=2.0.0",
+    "numpy",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "mpmath",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"] 
