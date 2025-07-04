@@ -33,35 +33,38 @@ def _unify_args(
     x: Union[SCRR_Tensor, torch.Tensor], y: Union[SCRR_Tensor, torch.Tensor]
 ) -> Tuple[SCRR_Tensor, SCRR_Tensor]:
     """Приводит оба аргумента к SCRR_Tensor с одинаковой точностью k."""
-    if isinstance(x, SCRR_Tensor) and isinstance(y, SCRR_Tensor):
+    is_x_scrr = isinstance(x, SCRR_Tensor)
+    is_y_scrr = isinstance(y, SCRR_Tensor)
+
+    if is_x_scrr and is_y_scrr:
         if x.precision_k != y.precision_k:
             raise ValueError("Mixed precision SCRR ops not supported yet.")
-        return x, y
-    
-    is_x_scrr = isinstance(x, SCRR_Tensor)
-    scrr_arg = x if is_x_scrr else y
-    other_arg = y if is_x_scrr else x
-
-    if not isinstance(other_arg, torch.Tensor):
-        other_arg = torch.tensor(other_arg, dtype=torch.float64, device=scrr_arg.device)
-
-    # Создаем SCRR тензор из обычного, и даем ему возможность "вещать" (broadcast)
-    # до формы другого тензора.
-    other_scrr = SCRR_Tensor.from_float(other_arg, k=scrr_arg.precision_k)
-    
-    # new_shape должен соответствовать форме scrr_arg, но сохранить k компонентов
-    final_shape = torch.broadcast_shapes(scrr_arg.shape, other_scrr.shape)
-    
-    # Broadcast a.components до нужной формы.
-    # Добавляем фиктивное измерение для k, чтобы broadcast работал как надо
-    expanded_other_comps = other_scrr.components.expand(final_shape + (scrr_arg.precision_k,))
-    
-    other_final = SCRR_Tensor(expanded_other_comps)
-    
-    if is_x_scrr:
-        return scrr_arg, other_final
+        k = x.precision_k
+    elif is_x_scrr:
+        k = x.precision_k
+    elif is_y_scrr:
+        k = y.precision_k
     else:
-        return other_final, scrr_arg
+        raise TypeError("At least one argument must be an SCRR_Tensor.")
+
+    # Оборачиваем не-SCRR аргументы
+    if not is_x_scrr:
+        x_tensor = torch.as_tensor(x, dtype=torch.float64, device=y.device)
+        x = SCRR_Tensor.from_float(x_tensor, k=k)
+    if not is_y_scrr:
+        y_tensor = torch.as_tensor(y, dtype=torch.float64, device=x.device)
+        y = SCRR_Tensor.from_float(y_tensor, k=k)
+
+    # Broadcasting
+    final_shape = torch.broadcast_shapes(x.shape, y.shape)
+    
+    x_comps = x.components.expand(final_shape + (k,))
+    y_comps = y.components.expand(final_shape + (k,))
+    
+    x_final = SCRR_Tensor(x_comps)
+    y_final = SCRR_Tensor(y_comps)
+
+    return x_final, y_final
 
 
 # -----------------------------------------------------------------------------
@@ -133,111 +136,166 @@ def scrr_matmul(a: SCRR_Tensor, b: SCRR_Tensor) -> SCRR_Tensor:
     """
     SCRR-реализация `torch.matmul` с использованием иерархического блочного алгоритма.
     
-    Алгоритм из статьи:
-    1. Expansion: вычисляем все попарные произведения компонентов через TwoProd
-    2. Aggregation: собираем "грязный" тензор для каждого элемента результата
-    3. Renormalization: применяем Renormalize к каждому элементу результата
-    
-    Сложность: O(N³k² log(Nk²)) вместо O(N³k⁴) для наивного подхода.
+    Алгоритм (векторизованный):
+    1. Expansion: все перекрестные произведения компонентов a[i,n,l] * b[n,j,m]
+       вычисляются через two_prod с помощью broadcasting.
+    2. Aggregation: все продукты (p) и ошибки (e) собираются в один
+       "грязный" тензор размерности [M, P, N*k*k*2].
+    3. Renormalization: Renormalize применяется параллельно к каждому
+       элементу [i, j] "грязного" тензора.
     """
-    a_scrr, b_scrr = _unify_args(a, b)
+    # Ручная проверка и унификация типов, т.к. broadcasting здесь не нужен
+    if not isinstance(a, SCRR_Tensor) and isinstance(b, SCRR_Tensor):
+        a = SCRR_Tensor.from_float(torch.as_tensor(a, dtype=torch.float64, device=b.device), k=b.precision_k)
+    elif isinstance(a, SCRR_Tensor) and not isinstance(b, SCRR_Tensor):
+        b = SCRR_Tensor.from_float(torch.as_tensor(b, dtype=torch.float64, device=a.device), k=a.precision_k)
+    elif not isinstance(a, SCRR_Tensor) and not isinstance(b, SCRR_Tensor):
+        raise TypeError("At least one argument to matmul must be an SCRR_Tensor")
+
+    if a.precision_k != b.precision_k:
+        raise ValueError("Mixed precision matmul is not supported.")
+        
+    a_scrr, b_scrr = a, b
     k = a_scrr.precision_k
+
+    # Сохраняем исходные размерности для восстановления формы результата
+    orig_a_ndim = a_scrr.ndim
+    orig_b_ndim = b_scrr.ndim
     
-    # Обрабатываем случаи 1D векторов (как в torch.matmul)
-    a_is_1d = a_scrr.ndim == 1
-    b_is_1d = b_scrr.ndim == 1
-    
-    if a_is_1d:
-        a_scrr = a_scrr.unsqueeze(0)  # [1, N, k]
-    if b_is_1d:
-        b_scrr = b_scrr.unsqueeze(-1)  # [N, 1, k]
-    
-    # Поддерживаем только 2D матрицы после приведения
+    # Приводим к 2D матрицам для matmul, если это векторы
+    if orig_a_ndim == 1:
+        a_scrr = SCRR_Tensor(a_scrr.components.unsqueeze(0)) # [N, k] -> [1, N, k]
+    if orig_b_ndim == 1:
+        b_scrr = SCRR_Tensor(b_scrr.components.unsqueeze(-2)) # [N, k] -> [N, 1, k]
+
+    # Поддерживаем только 2D x 2D после приведения
     if a_scrr.ndim != 2 or b_scrr.ndim != 2:
-        raise NotImplementedError("SCRR matmul currently supports only 2D matrices")
+        # TODO: Добавить поддержку batch matmul
+        raise NotImplementedError(f"SCRR matmul supports 2D@2D, 2D@1D, 1D@2D, 1D@1D. Got {orig_a_ndim}D@{orig_b_ndim}D.")
     
     M, N = a_scrr.shape
     N_check, P = b_scrr.shape
     
     if N != N_check:
-        raise ValueError(f"Matrix dimensions don't match: {a_scrr.shape} vs {b_scrr.shape}")
+        raise ValueError(f"Matrix dimensions don't match for matmul: {a_scrr.shape} vs {b_scrr.shape}")
+        
+    # --- Векторизованный алгоритм ---
     
-    # Создаем результирующий тензор компонентов
-    result_components = torch.zeros(M, P, k, dtype=torch.float64, device=a_scrr.device)
+    # 1. Expansion
+    # a_comps: [M, N, k] -> [M, 1, N, k, 1]
+    # b_comps: [N, P, k] -> [1, P, N, 1, k]
+    a_exp = a_scrr.components.unsqueeze(1).unsqueeze(-1)
+    b_exp = b_scrr.components.permute(1, 0, 2).unsqueeze(0).unsqueeze(-2)
+
+    # Broadcasting-умножение: [M, 1, N, k, 1] * [1, P, N, 1, k] -> [M, P, N, k, k]
+    p, e = two_prod(a_exp, b_exp) # p и e имеют форму [M, P, N, k, k]
+
+    # 2. Aggregation
+    # Собираем *ВСЕ* промежуточные продукты и ошибки в один большой "грязный" тензор.
+    # Это ключевой шаг, который избегает неточной промежуточной суммы.
+    # Форма p и e: [M, P, N, k, k]
+    # Мы хотим получить грязный тензор формы [M, P, N * k * k * 2]
     
-    # Для каждого элемента результата (i, j)
-    for i in range(M):
-        for j in range(P):
-            # Собираем все произведения для dot-product a[i, :] · b[:, j]
-            dirty_terms = []
-            
-            # Для каждого n в сумме
-            for n in range(N):
-                # Для каждой пары компонентов (l, m)
-                for l in range(k):
-                    for m in range(k):
-                        # Вычисляем произведение через TwoProd
-                        a_comp = a_scrr.components[i, n, l]  # скаляр
-                        b_comp = b_scrr.components[n, j, m]  # скаляр
-                        
-                        # two_prod ожидает тензоры, создаем скалярные тензоры без warning
-                        a_tensor = a_comp.clone().detach()
-                        b_tensor = b_comp.clone().detach()
-                        
-                        p, e = two_prod(a_tensor, b_tensor)
-                        
-                        # Добавляем оба компонента в грязный список
-                        dirty_terms.append(p.item())
-                        if e.item() != 0.0:  # Оптимизация: не добавляем нулевые ошибки
-                            dirty_terms.append(e.item())
-            
-            # Если нет термов, результат — ноль
-            if not dirty_terms:
-                # result_components[i, j, :] уже инициализирован нулями
-                continue
-            
-            # Создаем грязный тензор и ренормализуем
-            dirty_tensor = torch.tensor(dirty_terms, dtype=torch.float64, device=a_scrr.device)
-            clean_components = renormalize(dirty_tensor.unsqueeze(0), k=k).squeeze(0)  # [k]
-            
-            result_components[i, j, :] = clean_components
+    # Явное приведение `e` к форме `p` для надежности
+    e = e.broadcast_to(p.shape)
     
-    result = SCRR_Tensor(result_components)
+    # Сначала объединяем p и e
+    all_prods = torch.cat([p, e], dim=-1) # Форма [M, P, N, k, 2k]
     
-    # Убираем добавленные размерности для 1D случаев
-    if a_is_1d and b_is_1d:
-        # Векторное произведение: результат скаляр
-        result = result.squeeze(0).squeeze(0)  # [1, 1, k] -> [k]
-    elif a_is_1d:
-        # Строка на матрицу: результат строка
-        result = result.squeeze(0)  # [1, P, k] -> [P, k]
-    elif b_is_1d:
-        # Матрица на столбец: результат столбец
-        result = result.squeeze(1)  # [M, 1, k] -> [M, k]
+    # Затем "сплющиваем" измерения N, k и 2k в одно
+    dirty = all_prods.flatten(start_dim=2) # Форма [M, P, N*k*2k]
     
+    # 3. Renormalization
+    # Применяем renormalize параллельно ко всем M*P элементам
+    # `renormalize` суммирует по последнему измерению, что нам и нужно.
+    new_components = renormalize(dirty, k=k) # [M, P, k]
+    
+    result = SCRR_Tensor(new_components)
+    
+    # Восстанавливаем исходную форму результата в соответствии с правилами matmul
+    if orig_a_ndim == 1 and orig_b_ndim == 1: # dot product
+        result = SCRR_Tensor(result.components.squeeze(0).squeeze(0))
+    elif orig_a_ndim == 1: # vector @ matrix
+        result = SCRR_Tensor(result.components.squeeze(0))
+    elif orig_b_ndim == 1: # matrix @ vector
+        result = SCRR_Tensor(result.components.squeeze(1))
+        
     return result
 
 
 @implements(torch.div)
 def scrr_div(x: Union[SCRR_Tensor, torch.Tensor], y: Union[SCRR_Tensor, torch.Tensor]) -> SCRR_Tensor:
-    """SCRR-реализация `torch.div` (деление)."""
+    """
+    SCRR-реализация `torch.div` (деление) через итерации Ньютона-Рафсона.
+    Вычисляет x / y = x * (1/y).
+    """
     x_scrr, y_scrr = _unify_args(x, y)
     k = x_scrr.precision_k
-    
-    # Для деления используем приближение: x/y ≈ x * (1/y)
-    # Сначала вычисляем 1/y через обычные torch операции
+
+    # Начальное приближение для 1/y
     y_float = y_scrr.to_float()
     inv_y_float = 1.0 / y_float
-    inv_y_scrr = SCRR_Tensor.from_float(inv_y_float, k=k)
+    # Проверка на деление на ноль
+    if torch.isinf(inv_y_float).any() or torch.isnan(inv_y_float).any():
+         # Если результат inf/nan, просто используем стандартную операцию
+         res_float = x_scrr.to_float() / y_float
+         return SCRR_Tensor.from_float(res_float, k=k)
+
+    z = SCRR_Tensor.from_float(inv_y_float, k=k)
     
-    # Затем умножаем x на 1/y
-    return scrr_mul(x_scrr, inv_y_scrr)
+    # Константа 2.0 как SCRR_Tensor
+    two = SCRR_Tensor.from_float(torch.tensor(2.0, dtype=torch.float64, device=x_scrr.device), k=k)
+
+    # Итерации Ньютона-Рафсона для уточнения 1/y
+    # Количество итераций зависит от k. log2(k) должно быть достаточно.
+    # k=2 -> 1 итерация, k=4 -> 2, k=8 -> 3
+    num_iterations = max(2, int(torch.ceil(torch.log2(torch.tensor(float(k))))) + 1)
+    
+    for _ in range(num_iterations):
+        # z_new = z * (2 - y * z)
+        y_mul_z = scrr_mul(y_scrr, z)
+        term = scrr_sub(two, y_mul_z)
+        z = scrr_mul(z, term)
+
+    # Финальное умножение x * (1/y)
+    return scrr_mul(x_scrr, z)
 
 
 @implements(torch.true_divide)
 def scrr_true_divide(x: Union[SCRR_Tensor, torch.Tensor], y: Union[SCRR_Tensor, torch.Tensor]) -> SCRR_Tensor:
     """SCRR-реализация `torch.true_divide` (аналогично div)."""
     return scrr_div(x, y)
+
+
+@implements(torch.pow)
+def scrr_pow(base: SCRR_Tensor, exponent: Union[int, float, torch.Tensor]) -> SCRR_Tensor:
+    """SCRR-реализация `torch.pow`."""
+    if not isinstance(exponent, int) or exponent < 0:
+        raise NotImplementedError("SCRR pow currently only supports non-negative integer exponents.")
+
+    k = base.precision_k
+
+    if exponent == 0:
+        ones = torch.ones_like(base.to_float())
+        return SCRR_Tensor.from_float(ones, k=k)
+    
+    if exponent == 1:
+        return base
+
+    # Алгоритм возведения в степень через двоичное разложение (exponentiation by squaring)
+    result = SCRR_Tensor.from_float(torch.ones_like(base.to_float()), k=k)
+    
+    current_power = base
+    exp = exponent
+    
+    while exp > 0:
+        if exp % 2 == 1:
+            result = scrr_mul(result, current_power)
+        
+        current_power = scrr_mul(current_power, current_power)
+        exp //= 2
+        
+    return result
 
 
 # Переопределяем, так как импортировали HANDLED_FUNCTIONS

@@ -16,30 +16,30 @@ def test_backward_basic():
     y = SCRR_Tensor.from_float(torch.tensor(3.0, dtype=torch.float64), k=4)
     y.requires_grad = True
     
-    print(f"x = {x.to_float(exact_sum=True, mp_ctx=mp).item()}")
-    print(f"y = {y.to_float(exact_sum=True, mp_ctx=mp).item()}")
+    print(f"x = {x.to_mpmath(mp)}")
+    print(f"y = {y.to_mpmath(mp)}")
     
     # Вычисляем z = x * y
     z = x * y
-    print(f"z = x * y = {z.to_float(exact_sum=True, mp_ctx=mp).item()}")
+    print(f"z = x * y = {z.to_mpmath(mp)}")
     
     # Backward
     z.backward()
     
-    print(f"x.grad = {x.grad.to_float(exact_sum=True, mp_ctx=mp).item() if x.grad else 'None'}")
-    print(f"y.grad = {y.grad.to_float(exact_sum=True, mp_ctx=mp).item() if y.grad else 'None'}")
+    print(f"x.grad = {x.grad.to_mpmath(mp) if x.grad else 'None'}")
+    print(f"y.grad = {y.grad.to_mpmath(mp) if y.grad else 'None'}")
     
     # Проверяем правильность градиентов
     expected_x_grad = 3.0  # dz/dx = y
     expected_y_grad = 2.0  # dz/dy = x
     
     if x.grad:
-        x_grad_error = abs(x.grad.to_float(exact_sum=True, mp_ctx=mp).item() - expected_x_grad)
+        x_grad_error = abs(x.grad.to_mpmath(mp) - expected_x_grad)
         print(f"x.grad error: {x_grad_error}")
         assert x_grad_error < 1e-15, f"x.grad error too large: {x_grad_error}"
     
     if y.grad:
-        y_grad_error = abs(y.grad.to_float(exact_sum=True, mp_ctx=mp).item() - expected_y_grad)
+        y_grad_error = abs(y.grad.to_mpmath(mp) - expected_y_grad)
         print(f"y.grad error: {y_grad_error}")
         assert y_grad_error < 1e-15, f"y.grad error too large: {y_grad_error}"
 
@@ -63,13 +63,13 @@ def test_backward_cancellation():
     # Вычисляем z = (x - y) * (x - y) = (x - y)²
     diff = x - y
     z = diff * diff
-    print(f"z = (x - y)² = {z.to_float(exact_sum=True, mp_ctx=mp).item()}")
+    print(f"z = (x - y)² = {z.to_mpmath(mp)}")
     
     # Backward
     z.backward()
     
-    print(f"x.grad = {x.grad.to_float(exact_sum=True, mp_ctx=mp).item() if x.grad else 'None'}")
-    print(f"y.grad = {y.grad.to_float(exact_sum=True, mp_ctx=mp).item() if y.grad else 'None'}")
+    print(f"x.grad = {x.grad.to_mpmath(mp) if x.grad else 'None'}")
+    print(f"y.grad = {y.grad.to_mpmath(mp) if y.grad else 'None'}")
     
     # Проверяем правильность градиентов
     # dz/dx = 2(x - y) = 2 * 1e-15
@@ -78,12 +78,12 @@ def test_backward_cancellation():
     expected_y_grad = -2 * (a - b)
     
     if x.grad:
-        x_grad_error = abs(x.grad.to_float(exact_sum=True, mp_ctx=mp).item() - expected_x_grad)
+        x_grad_error = abs(x.grad.to_mpmath(mp) - expected_x_grad)
         print(f"x.grad error: {x_grad_error}")
         assert x_grad_error < 1e-15, f"x.grad error too large: {x_grad_error}"
     
     if y.grad:
-        y_grad_error = abs(y.grad.to_float(exact_sum=True, mp_ctx=mp).item() - expected_y_grad)
+        y_grad_error = abs(y.grad.to_mpmath(mp) - expected_y_grad)
         print(f"y.grad error: {y_grad_error}")
         assert y_grad_error < 1e-15, f"y.grad error too large: {y_grad_error}"
 

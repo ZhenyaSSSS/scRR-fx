@@ -34,17 +34,28 @@ def test_scrr_tensor_constructor_errors():
         SCRR_Tensor(wrong_dtype)
 
 
-def test_from_float():
-    """Проверяет создание SCRR_Tensor из обычного тензора."""
-    tensor = torch.randn(5, 3, dtype=torch.float64)
+def test_from_float_exactness():
+    """Проверяет, что SCRR_Tensor.from_float сохраняет точное значение."""
+    tensor = torch.randn(5, 3, dtype=torch.float64) * 1e10
     k = 4
     
     scrr = SCRR_Tensor.from_float(tensor, k=k)
     
-    assert scrr.shape == (5, 3)
+    # 1. Проверка базовых свойств
+    assert scrr.shape == tensor.shape
     assert scrr.precision_k == k
-    assert torch.allclose(scrr.components[..., 0], tensor)
-    assert torch.all(scrr.components[..., 1:] == 0)
+    
+    # 2. Проверка числовой идентичности с помощью mpmath
+    flat_original = tensor.flatten()
+    flat_components = scrr.components.reshape(-1, k)
+    
+    for i in range(tensor.numel()):
+        original_val = mp.mpf(flat_original[i].item())
+        
+        # Суммируем компоненты для одного элемента SCRR
+        scrr_sum_mp = mp.fsum([mp.mpf(c.item()) for c in flat_components[i]])
+        
+        assert mp.almosteq(original_val, scrr_sum_mp)
 
 
 def test_from_float_auto_conversion():

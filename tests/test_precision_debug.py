@@ -29,7 +29,7 @@ def test_twosum_precision_basic():
         
         # TwoSum
         s, e = two_sum(torch.tensor(a, dtype=torch.float64), torch.tensor(b, dtype=torch.float64))
-        twosum_total = s.item() + e.item()
+        twosum_total = s + e
         
         # Эталон через mpmath 
         mp.dps = 50
@@ -77,7 +77,7 @@ def test_twoprod_precision_basic():
         
         # TwoProd
         p, e = two_prod(torch.tensor(a, dtype=torch.float64), torch.tensor(b, dtype=torch.float64))
-        twoprod_total = p.item() + e.item()
+        twoprod_total = p + e
         
         # Эталон через mpmath 
         mp.dps = 50
@@ -121,12 +121,12 @@ def test_renormalize_conservation():
         print(f"\nТест {i+1}: {len(dirty_tensor)} компонентов")
         
         # Исходная сумма
-        original_sum = dirty_tensor.sum().item()
+        original_sum = dirty_tensor.sum()
         
         # Renormalize с разными k
         for k in [2, 4, 8]:
             clean_tensor = renormalize(dirty_tensor, k=k)
-            clean_sum = clean_tensor.sum().item()
+            clean_sum = clean_tensor.sum()
             
             conservation_error = abs(original_sum - clean_sum)
             relative_error = conservation_error / max(abs(original_sum), 1e-20)
@@ -161,7 +161,7 @@ def test_from_float_to_float_roundtrip():
         for k in [2, 4, 8, 16]:
             # Roundtrip: float → SCRR → float
             x_scrr = SCRR_Tensor.from_float(x_torch, k=k)
-            x_back = x_scrr.to_float().item()
+            x_back = x_scrr.to_float()
             
             roundtrip_error = abs(val - x_back)
             relative_error = roundtrip_error / max(abs(val), 1e-20)
@@ -209,17 +209,17 @@ def test_simple_arithmetic_vs_float64():
                 # Простое сложение
                 x1 = SCRR_Tensor.from_float(torch.tensor(1.0), k=k)
                 x2 = SCRR_Tensor.from_float(torch.tensor(1e-16), k=k)
-                scrr_result = (x1 + x2).to_float().item()
+                scrr_result = (x1 + x2).to_float()
             elif "-" in op_name:
                 # Вычитание
                 x1 = SCRR_Tensor.from_float(torch.tensor(1.0), k=k)
                 x2 = SCRR_Tensor.from_float(torch.tensor(1.0 - 1e-16), k=k)
-                scrr_result = (x1 - x2).to_float().item()
+                scrr_result = (x1 - x2).to_float()
             else:
                 # Умножение
                 x1 = SCRR_Tensor.from_float(torch.tensor(1.0 + 1e-15), k=k)
                 x2 = SCRR_Tensor.from_float(torch.tensor(1.0 - 1e-15), k=k)
-                scrr_result = (x1 * x2).to_float().item()
+                scrr_result = (x1 * x2).to_float()
             
             float64_error = abs(float64_result - exact_result) / abs(exact_result)
             scrr_error = abs(scrr_result - exact_result) / abs(exact_result)
@@ -286,7 +286,7 @@ def test_problematic_function_detailed():
         final = minus_one - two_x
         print(f"  Финальные компоненты: {final.components}")
         
-        result_scrr = final.to_float().item()
+        result_scrr = final.to_float()
         error_scrr = abs(result_scrr - expected_result) / abs(expected_result)
         
         print(f"  Результат: {result_scrr:.15e}")
@@ -316,9 +316,9 @@ def test_cancellation_error_pattern():
     for k in [2, 4, 8, 16]:
         scrr_x1 = SCRR_Tensor.from_float(torch.tensor(x1, dtype=torch.float64), k=k)
         scrr_x2 = SCRR_Tensor.from_float(torch.tensor(x2, dtype=torch.float64), k=k)
-        scrr_result = (scrr_x1 - scrr_x2).to_float(exact_sum=True, mp_ctx=mp).item()
+        scrr_result = (scrr_x1 - scrr_x2).to_mpmath(mp)
         scrr_error = abs(scrr_result - expected)
-        print(f"SCRR k={k:2d}: result={scrr_result:.16e}, error={scrr_error:.2e}")
+        print(f"SCRR k={k:<2}: result={float(scrr_result):.16e}, error={float(scrr_error):.2e}")
     print(f"mpmath (etalon): {expected:.16e}")
 
 
@@ -350,14 +350,14 @@ def test_cancellation_patterns_various():
             scrr_a = SCRR_Tensor.from_float(torch.tensor(a, dtype=torch.float64), k=k)
             scrr_b = SCRR_Tensor.from_float(torch.tensor(b, dtype=torch.float64), k=k)
             if name.startswith("(1.0 + eps) * (1.0 - eps)"):
-                scrr_result = (scrr_a * scrr_b - SCRR_Tensor.from_float(torch.tensor(1.0, dtype=torch.float64), k=k)).to_float(exact_sum=True, mp_ctx=mp).item()
+                scrr_result = (scrr_a * scrr_b - SCRR_Tensor.from_float(torch.tensor(1.0, dtype=torch.float64), k=k)).to_mpmath(mp)
             elif name.startswith("(1.0 + eps) / (1.0 - eps)"):
                 # division not implemented? fallback to float64
                 scrr_result = float64_result
             else:
-                scrr_result = (op(scrr_a, scrr_b)).to_float(exact_sum=True, mp_ctx=mp).item()
+                scrr_result = (op(scrr_a, scrr_b)).to_mpmath(mp)
             scrr_error = abs(scrr_result - expected)
-            print(f"  SCRR k={k:2d}: result={scrr_result:.16e}, error={scrr_error:.2e}")
+            print(f"    SCRR k={k:<2}: result={float(scrr_result):.16e}, error={float(scrr_error):.2e}")
         print(f"  mpmath (etalon): {expected:.16e}")
 
 
@@ -380,9 +380,9 @@ def test_real_world_tasks_error_pattern():
     print(f"  float64: result={float64_sum:.16e}, error={float64_error:.2e}")
     for k in [2, 4, 8, 16]:
         scrr_arr = [SCRR_Tensor.from_float(torch.tensor(x, dtype=torch.float64), k=k) for x in arr]
-        scrr_sum = sum(scrr_arr).to_float(exact_sum=True, mp_ctx=mp).item()
+        scrr_sum = sum(scrr_arr).to_mpmath(mp)
         scrr_error = abs(scrr_sum - expected_sum)
-        print(f"  SCRR k={k:2d}: result={scrr_sum:.16e}, error={scrr_error:.2e}")
+        print(f"    SCRR k={k:<2}: result={float(scrr_sum):.16e}, error={float(scrr_error):.2e}")
     print(f"  mpmath (etalon): {expected_sum:.16e}")
 
     # Задача 2: Dot product (накопление ошибок)
@@ -397,9 +397,9 @@ def test_real_world_tasks_error_pattern():
     for k in [2, 4, 8, 16]:
         scrr_a = [SCRR_Tensor.from_float(torch.tensor(x, dtype=torch.float64), k=k) for x in a]
         scrr_b = [SCRR_Tensor.from_float(torch.tensor(x, dtype=torch.float64), k=k) for x in b]
-        scrr_dot = sum(scrr_a[i] * scrr_b[i] for i in range(n)).to_float(exact_sum=True, mp_ctx=mp).item()
+        scrr_dot = sum(scrr_a[i] * scrr_b[i] for i in range(n)).to_mpmath(mp)
         scrr_error = abs(scrr_dot - expected_dot)
-        print(f"  SCRR k={k:2d}: result={scrr_dot:.16e}, error={scrr_error:.2e}")
+        print(f"  SCRR k={k:<2}: result={float(scrr_dot):.16e}, error={float(scrr_error):.2e}")
     print(f"  mpmath (etalon): {expected_dot:.16e}")
 
     # Задача 3: Variance (двойное сокращение)
@@ -417,9 +417,9 @@ def test_real_world_tasks_error_pattern():
         n_inv = SCRR_Tensor.from_float(torch.tensor(1.0/len(data), dtype=torch.float64), k=k)
         scrr_mean = scrr_sum * n_inv
         scrr_var = sum((x - scrr_mean)**2 for x in scrr_data) * n_inv
-        scrr_var_float = scrr_var.to_float(exact_sum=True, mp_ctx=mp).item()
-        scrr_error = abs(scrr_var_float - expected_var)
-        print(f"  SCRR k={k:2d}: result={scrr_var_float:.16e}, error={scrr_error:.2e}")
+        scrr_result = scrr_var.to_mpmath(mp)
+        scrr_error = abs(scrr_result - expected_var)
+        print(f"    SCRR k={k:<2}: result={float(scrr_result):.16e}, error={float(scrr_error):.2e}")
     print(f"  mpmath (etalon): {expected_var:.16e}")
 
     # Задача 4: Log-sum-exp (экстремальные значения)
@@ -438,7 +438,7 @@ def test_real_world_tasks_error_pattern():
         except:
             scrr_lse = float64_lse
         scrr_error = abs(scrr_lse - expected_lse)
-        print(f"  SCRR k={k:2d}: result={scrr_lse:.16e}, error={scrr_error:.2e}")
+        print(f"  SCRR k={k:<2}: result={float(scrr_lse):.16e}, error={float(scrr_error):.2e}")
     print(f"  mpmath (etalon): {expected_lse:.16e}")
 
 
@@ -453,8 +453,8 @@ def test_component_analysis():
     x_val = 1.0 + 1e-16
     for k in [2, 4, 8]:
         x_scrr = SCRR_Tensor.from_float(torch.tensor(x_val, dtype=torch.float64), k=k)
-        components_sum = x_scrr.components.sum().item()
-        to_float_result = x_scrr.to_float().item()
+        components_sum = x_scrr.components.sum()
+        to_float_result = x_scrr.to_float()
         print(f"  k={k}: components_sum={components_sum:.16e}, to_float={to_float_result:.16e}")
         if abs(components_sum - to_float_result) > 1e-20:
             print(f"    ⚠️  to_float НЕ возвращает сумму компонент!")
@@ -469,8 +469,8 @@ def test_component_analysis():
         a_scrr = SCRR_Tensor.from_float(torch.tensor(a, dtype=torch.float64), k=k)
         b_scrr = SCRR_Tensor.from_float(torch.tensor(b, dtype=torch.float64), k=k)
         result = a_scrr - b_scrr
-        components_sum = result.components.sum().item()
-        to_float_result = result.to_float().item()
+        components_sum = result.components.sum()
+        to_float_result = result.to_float()
         print(f"  k={k}: (1.0 - (1.0-1e-16))")
         print(f"    components: {result.components}")
         print(f"    components_sum: {components_sum:.16e}")
@@ -485,11 +485,11 @@ def test_component_analysis():
     from src.scrr_fx._renorm import renormalize
     # Создаем "грязный" тензор с компонентами разного масштаба
     dirty = torch.tensor([1.0, 1e-16, 1e-32, 1e-48], dtype=torch.float64)
-    original_sum = dirty.sum().item()
+    original_sum = dirty.sum()
     print(f"  Исходная сумма: {original_sum:.16e}")
     for k in [2, 4]:
         clean = renormalize(dirty, k=k)
-        clean_sum = clean.sum().item()
+        clean_sum = clean.sum()
         print(f"  k={k}: clean_sum={clean_sum:.16e}, components={clean}")
         if abs(clean_sum - original_sum) > 1e-20:
             print(f"    ⚠️  Ренормализация теряет сумму!")
@@ -507,7 +507,7 @@ def test_manual_renorm_cancellation():
     for k in [2, 4, 8]:
         clean = renormalize(dirty, k=k)
         print(f"k={k}: components={clean}")
-        print(f"  sum={clean.sum().item():.16e}")
+        print(f"  sum={clean.sum():.16e}")
 
 
 def debug_cancellation_step_by_step():
@@ -529,7 +529,7 @@ def debug_cancellation_step_by_step():
     for k in [2, 4, 8]:
         clean = renormalize(dirty, k=k)
         print(f"renormalize([a, -b], k={k}): components={clean}")
-        print(f"  sum={clean.sum().item():.16e}")
+        print(f"  sum={clean.sum():.16e}")
 
 
 def debug_scrr_tensor_cancellation():
@@ -546,7 +546,7 @@ def debug_scrr_tensor_cancellation():
     print(f"a.components: {a.components}")
     print(f"b.components: {b.components}")
     print(f"res.components: {res.components}")
-    print(f"res.to_float(): {res.to_float().item():.16e}")
+    print(f"res.to_float(): {res.to_float():.16e}")
 
 
 if __name__ == "__main__":

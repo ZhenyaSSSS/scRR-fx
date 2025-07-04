@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Sequence, Dict, Tuple, List, Optional
+from typing import Any, Sequence, Dict, Tuple, List, Optional, Union
 
 import torch
 from mpmath import mp
@@ -82,55 +82,21 @@ class SCRR_Tensor:
     def from_float(cls, tensor: torch.Tensor, k: int = 2) -> SCRR_Tensor:
         """
         Создает SCRR_Tensor из обычного torch.Tensor.
-        Реализует честное разложение float64 в expansion (QD-style, Dekker/Hida):
-        [x0, x1, ..., x_{k-1}], где x0+x1+...+x_{k-1} = x точно.
-        
-        Для больших чисел использует более стабильный подход.
+
+        Представление простое и точное: исходный тензор становится
+        первым компонентом, а остальные k-1 компонентов заполняются нулями.
+        Это гарантирует, что `value(SCRR_Tensor) == tensor`.
         """
         if tensor.dtype != torch.float64:
             tensor = tensor.to(torch.float64)
+
+        # Добавляем новое измерение для компонентов
+        components = torch.zeros(tensor.shape + (k,), dtype=torch.float64, device=tensor.device)
         
-        orig_shape = tensor.shape
-        flat_tensor = tensor.flatten()
+        # Помещаем исходный тензор в первый компонент
+        components[..., 0] = tensor
         
-        # Создаем тензор для компонентов напрямую
-        # Форма: [N, k], где N - количество элементов в исходном тензоре
-        components = torch.zeros(flat_tensor.numel(), k, dtype=torch.float64, device=tensor.device)
-        
-        # Обрабатываем каждый элемент отдельно
-        for i, x_val in enumerate(flat_tensor):
-            cur = x_val.item()
-            
-            # Для очень больших чисел используем более стабильный подход
-            if abs(cur) > 1e15:
-                # Для больших чисел просто кладем число в первый компонент
-                # и нули в остальные - это лучше, чем огромные ошибки разложения
-                components[i, 0] = cur
-                # Остальные компоненты уже инициализированы нулями
-            else:
-                # Для обычных чисел используем правильный Dekker split
-                # Итеративно извлекаем компоненты, начиная с самого значимого
-                remainder = cur
-                
-                for j in range(k - 1):
-                    if abs(remainder) < 1e-300:
-                        # Остаток слишком мал, остальные компоненты будут нулями
-                        break
-                    
-                    # Dekker split для извлечения старшей части
-                    split = 134217729.0  # 2^27 + 1
-                    c = split * remainder
-                    high = c - (c - remainder)
-                    
-                    components[i, j] = high
-                    remainder = remainder - high
-                
-                # Последний компонент - это весь оставшийся остаток
-                components[i, -1] = remainder
-        
-        # Возвращаем компонентам исходную форму
-        final_shape = orig_shape + (k,)
-        return cls(components.reshape(final_shape))
+        return cls(components)
 
     @classmethod
     def from_mpmath(cls, mp_ctx, mpf_list, k: int = 2, device=None) -> 'SCRR_Tensor':
@@ -169,59 +135,54 @@ class SCRR_Tensor:
 
         return cls(components_tensor)
 
-    def to_float(self, exact_sum: bool = False, mp_ctx=None) -> torch.Tensor:
+    def to_float(self) -> torch.Tensor:
         """
         Конвертирует SCRR_Tensor обратно в стандартный torch.Tensor.
-        
-        Args:
-            exact_sum: Если True, возвращает точную сумму через mpmath
-                      (медленно, но без потери точности)
-            mp_ctx: Контекст mpmath для точных вычислений
+        Это быстрая, но неточная операция. Для точного значения
+        используйте `to_mpmath`.
         """
-        if exact_sum:
-            if mp_ctx is None:
-                raise ValueError("mp_ctx must be provided when exact_sum=True")
-            
-            # Точная сумма через mpmath (медленно, но точно)
-            mp_ctx.dps = 1000  # Высокая точность
-            
-            # Обрабатываем разные размерности
-            if self.components.ndim == 1:
-                # Скаляр: [k]
-                sum_mp = mp_ctx.mpf(0)
-                for j in range(self.precision_k):
-                    sum_mp += mp_ctx.mpf(self.components[j].item())
-                return torch.tensor(float(sum_mp), dtype=torch.float64, device=self.device)
-            else:
-                # Многомерный: [..., k]
-                result = []
-                for i in range(self.components.shape[0]):
-                    sum_mp = mp_ctx.mpf(0)
-                    for j in range(self.precision_k):
-                        sum_mp += mp_ctx.mpf(self.components[i, j].item())
-                    result.append(float(sum_mp))
-                
-                return torch.tensor(result, dtype=torch.float64, device=self.device)
-        else:
-            # Быстрая сумма в float64 (может потерять точность)
-            return torch.sum(self.components, dim=-1)
+        return torch.sum(self.components, dim=-1)
 
-    def to_mpmath(self, mp_ctx) -> 'mpf':
+    def to_mpmath(self, mp_ctx) -> Union[mp.mpf, List[mp.mpf]]:
         """
-        Конвертирует SCRR_Tensor обратно в mpmath.mpf, используя переданный контекст mp_ctx.
-        Использует строковое представление для максимальной точности.
+        Конвертирует SCRR_Tensor обратно в mpmath.mpf (или список),
+        используя переданный контекст mp_ctx.
+        Это медленный, но численно точный метод.
         """
-        # Конвертируем каждый компонент в строку, чтобы избежать ошибок округления float -> mpf
+        # Векторизованный вариант будет сложен из-за природы mpmath,
+        # поэтому итерируем.
+        if self.ndim == 0: # Скаляр
+            return self.to_mpmath_scalar(mp_ctx)
+        
+        # Работаем с плоским представлением и восстанавливаем форму в конце
+        flat_components = self.components.reshape(-1, self.precision_k)
+        mp_values = []
+        for i in range(flat_components.shape[0]):
+            # Используем строковое представление для максимальной точности
+            comp_strings = [repr(c.item()) for c in flat_components[i]]
+            comp_mp = [mp_ctx.mpf(s) for s in comp_strings]
+            mp_values.append(mp_ctx.fsum(comp_mp))
+            
+        # Восстанавливаем исходную форму
+        if self.ndim > 1:
+            return np.array(mp_values, dtype=object).reshape(self.shape).tolist()
+        else:
+            return mp_values
+            
+    def to_mpmath_scalar(self, mp_ctx) -> mp.mpf:
+        """Вспомогательная функция для конвертации скалярного SCRR_Tensor в mpmath.mpf."""
+        if self.ndim > 0:
+            raise ValueError("This method is for scalar SCRR_Tensors only")
+        
         components_as_strings = [repr(c) for c in self.components.flatten().tolist()]
-        
-        # Создаем mpf из строковых представлений
         components_mp = [mp_ctx.mpf(s) for s in components_as_strings]
-        
-        # fsum - это точная сумма для чисел с плавающей точкой
         return mp_ctx.fsum(components_mp)
 
     def __repr__(self) -> str:
+        # Для repr используем быструю, неточную конвертацию
         val_str = repr(self.to_float()).replace("tensor", "SCRR_Tensor")
+        # Удаляем лишние пробелы и переносы строк
+        val_str = ' '.join(val_str.split())
         return f"{val_str[:-1]}, k={self.precision_k})"
 
     @classmethod
@@ -267,35 +228,38 @@ class SCRR_Tensor:
         return torch.neg(self)
 
     def __pow__(self, exponent):
-        if not isinstance(exponent, int) or exponent < 0:
-            # Пока поддерживаем только целые неотрицательные степени
-            raise NotImplementedError("Only non-negative integer powers are supported for SCRR_Tensor.")
+        # Реализация через torch.pow, будет перехвачена диспатчером
+        return torch.pow(self, exponent)
 
-        if exponent == 0:
-            # Любое число в степени 0 равно 1
-            ones_tensor = torch.ones(self.shape, dtype=self.dtype, device=self.device)
-            return SCRR_Tensor.from_float(ones_tensor, k=self.precision_k)
-        
-        if exponent == 1:
-            return self
-        
-        # Стандартный алгоритм exponentiation by squaring
-        result = SCRR_Tensor.from_float(torch.ones(self.shape, dtype=self.dtype, device=self.device), k=self.precision_k)
-        base = self
-        exp = exponent
+    def __truediv__(self, other):
+        return torch.div(self, other)
 
-        while exp > 0:
-            # Если степень нечетная, умножаем result на base
-            if exp % 2 == 1:
-                result = result * base
-            # Возводим base в квадрат и уменьшаем степень вдвое
-            base = base * base
-            exp //= 2
-            
-        return result
+    def __rtruediv__(self, other):
+        return torch.div(other, self)
+
+    def __getitem__(self, key):
+        """Позволяет индексировать SCRR_Tensor как обычный тензор."""
+        if not isinstance(key, tuple):
+            key = (key,)
+        
+        # Добавляем полный срез для измерения компонентов, чтобы оно не затрагивалось
+        key_for_components = key + (slice(None),)
+        
+        sub_components = self.components[key_for_components]
+        
+        # Если в результате индексации мы все еще имеем измерение для k,
+        # возвращаем новый SCRR_Tensor. Иначе, это скаляр, и мы должны
+        # вернуть его "значение".
+        if sub_components.ndim > 0 and sub_components.shape[-1] == self.precision_k:
+             return SCRR_Tensor(sub_components)
+        else:
+             # Если мы выбрали один компонент или срез, который не является полным
+             # возвращаем обычный torch.Tensor
+             return sub_components
 
     # --- Методы для изменения формы ---
     def reshape(self, *shape) -> SCRR_Tensor:
+        """Возвращает SCRR_Tensor с измененной формой."""
         new_components = self.components.reshape(shape + (self.precision_k,))
         return SCRR_Tensor(new_components)
 

@@ -12,7 +12,7 @@ mp.dps = 200
 
 def test_dispatch_registration():
     """Проверяет, что все операции зарегистрированы в HANDLED_FUNCTIONS."""
-    required_ops = [torch.add, torch.sub, torch.mul, torch.matmul, torch.neg]
+    required_ops = [torch.add, torch.sub, torch.mul, torch.matmul, torch.neg, torch.div]
     
     for op in required_ops:
         assert op in HANDLED_FUNCTIONS, f"Operation {op.__name__} not registered"

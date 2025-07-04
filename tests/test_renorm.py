@@ -9,7 +9,7 @@ import numpy as np
 
 from scrr_fx._renorm import renormalize, fast_two_sum_reduction
 from scrr_fx._tensor import SCRR_Tensor
-from tests.helpers import _mp_sum, to_scrr
+from tests.helpers import _mp_sum, to_scrr, scrr_to_mp_sum
 
 mp.dps = 200  # Устанавливаем высокую точность для mpmath
 
@@ -89,11 +89,19 @@ def test_renormalize_edge_cases(data_generator):
 def test_scrr_tensor_from_dirty():
     dirty = torch.randn(5, 15, dtype=torch.float64)
     k = 3
+
+    # Эталонная сумма с высокой точностью
+    expected_sum = _mp_sum(dirty)
+
+    # Создаем SCRR тензор
     scrr = SCRR_Tensor.from_dirty(dirty, k)
+    
+    # Получаем его значение с высокой точностью
+    actual_sum = scrr_to_mp_sum(scrr)
 
     assert scrr.precision_k == k
     # Проверяем, что сумма компонентов совпадает с исходной суммой
-    assert torch.allclose(scrr.value(), dirty.sum(dim=-1))
+    assert mp.almosteq(expected_sum, actual_sum, rel_eps=1e-15)
 
 # Этот тест больше не нужен, т.к. renormalize теперь всегда возвращает один тензор
 # def test_renormalize_edge_zero_padding():

@@ -69,7 +69,11 @@ def _two_prod_dekker(a: torch.Tensor, b: torch.Tensor):
 
     p = a * b
     e = ((a_high * b_high - p) + a_high * b_low + a_low * b_high) + a_low * b_low
-    return p, e
+    # Явное создание e той же формы, что и p, заполненное нулями,
+    # и добавление e. Это гарантирует правильную форму.
+    err = torch.zeros_like(p)
+    err.add_(e)
+    return p, err
 
 
 def two_prod(a: torch.Tensor, b: torch.Tensor):
@@ -95,8 +99,13 @@ def two_prod(a: torch.Tensor, b: torch.Tensor):
 
     if hasattr(torch, "fma"):
         try:
-            return _two_prod_fma(a, b)
+            p, e = _two_prod_fma(a, b)
+            # Убедимся, что e имеет ту же форму, что и p
+            if e.shape != p.shape:
+                e = torch.broadcast_to(e, p.shape)
+            return p, e
         except RuntimeError:
-            # FMA недоступен на данном устройстве, fallback
+            # Если FMA недоступен (например, на CPU без AVX),
+            # используем фоллбэк на Dekker
             pass
     return _two_prod_dekker(a, b) 

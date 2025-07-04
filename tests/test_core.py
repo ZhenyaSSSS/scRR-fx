@@ -38,18 +38,36 @@ def _to_mp(t: torch.Tensor):
 def test_two_sum(a, b):
     """Проверяет точность two_sum на различных входных данных."""
     s, e = two_sum(a, b)
-
+    
     expected_sum = a + b
+    
+    # Отдельно обрабатываем NaN, т.к. a+b может дать nan, где s,e - нет
+    nan_mask = torch.isnan(expected_sum)
+    if nan_mask.any():
+        assert torch.isnan(s[nan_mask]).all()
+        # Ошибка `e` в случае inf-inf может быть 0 или nan, оба варианта корректны
+        assert (torch.isnan(e[nan_mask]) | (e[nan_mask] == 0)).all()
+
     # Проверяем неконечные случаи: ошибка должна быть 0
-    if not torch.isfinite(expected_sum).all():
-        assert torch.all(e[~torch.isfinite(expected_sum)] == 0)
-        # Пропускаем дальнейшую проверку точности для этих элементов
-        return
+    inf_mask = torch.isinf(expected_sum)
+    if inf_mask.any():
+        assert torch.all(e[inf_mask] == 0)
 
     # Проверяем конечные случаи с высокой точностью
+    finite_mask = torch.isfinite(expected_sum)
+    if not finite_mask.any():
+        return
+
     a_bc, b_bc = torch.broadcast_tensors(a, b)
     s_bc, e_bc = torch.broadcast_tensors(s, e)
-    for ga, gb, gs, ge in zip(_to_mp(a_bc), _to_mp(b_bc), _to_mp(s_bc), _to_mp(e_bc)):
+    
+    # Проверяем только конечные элементы
+    a_mp = _to_mp(a_bc[finite_mask])
+    b_mp = _to_mp(b_bc[finite_mask])
+    s_mp = _to_mp(s_bc[finite_mask])
+    e_mp = _to_mp(e_bc[finite_mask])
+    
+    for ga, gb, gs, ge in zip(a_mp, b_mp, s_mp, e_mp):
         assert mp.almosteq(ga + gb, gs + ge)
 
 
@@ -76,19 +94,33 @@ def test_two_prod(a, b):
     p, e = two_prod(a, b)
 
     expected_prod = a * b
-    # Проверяем неконечные случаи
-    finite_mask = torch.isfinite(expected_prod)
-    if not finite_mask.all():
-        # Для NaN-результатов, ошибка e тоже NaN, не проверяем ее на 0.
-        # Для Inf-результатов, ошибка должна быть 0.
-        inf_mask = ~finite_mask & ~torch.isnan(expected_prod)
-        if inf_mask.any():
-            assert torch.all(e[inf_mask] == 0)
-        return
+    
+    # Обработка NaN
+    nan_mask = torch.isnan(expected_prod)
+    if nan_mask.any():
+        assert torch.isnan(p[nan_mask]).all()
+        assert torch.isnan(e[nan_mask]).all()
 
-    # Для конечных чисел, проверяем точное равенство
-    exact_sum = p + e
-    assert torch.all(exact_sum == expected_prod)
+    # Проверяем неконечные случаи
+    inf_mask = torch.isinf(expected_prod)
+    if inf_mask.any():
+        assert torch.all(e[inf_mask] == 0)
+
+    # Проверяем конечные случаи с высокой точностью
+    finite_mask = torch.isfinite(expected_prod)
+    if not finite_mask.any():
+        return
+        
+    a_bc, b_bc = torch.broadcast_tensors(a, b)
+    p_bc, e_bc = torch.broadcast_tensors(p, e)
+
+    a_mp = _to_mp(a_bc[finite_mask])
+    b_mp = _to_mp(b_bc[finite_mask])
+    p_mp = _to_mp(p_bc[finite_mask])
+    e_mp = _to_mp(e_bc[finite_mask])
+
+    for ga, gb, gp, ge in zip(a_mp, b_mp, p_mp, e_mp):
+        assert mp.almosteq(ga * gb, gp + ge)
 
 
 @given(
@@ -126,4 +158,5 @@ def test_two_prod_property(arrs):
     for ga, gb, gp, ge in zip(_to_mp(a), _to_mp(b), _to_mp(p), _to_mp(e)):
         if not (mp.isfinite(ga) and mp.isfinite(gb) and mp.isfinite(gp) and mp.isfinite(ge)):
             continue
-        assert mp.almosteq(ga * gb, gp + ge) 
+        # Для EFT требуем абсолютную точность
+        assert ga * gb == gp + ge 
