@@ -85,7 +85,21 @@ def scrr_add(x: Union[SCRR_Tensor, torch.Tensor], y: Union[SCRR_Tensor, torch.Te
     
     # Шаг 2: Renormalization
     new_components = renormalize(dirty, k=k)
-    return SCRR_Tensor(new_components)
+    result = SCRR_Tensor(new_components, requires_grad=x_scrr.requires_grad or y_scrr.requires_grad)
+    
+    # Сохраняем граф вычислений для backward
+    if result.requires_grad:
+        def backward_hook(grad):
+            # Градиент по x: grad
+            if x_scrr.requires_grad:
+                x_scrr.backward(grad)
+            # Градиент по y: grad
+            if y_scrr.requires_grad:
+                y_scrr.backward(grad)
+        
+        result.register_backward_hook(backward_hook)
+    
+    return result
 
 
 @implements(torch.sub)
@@ -203,6 +217,29 @@ def scrr_matmul(a: SCRR_Tensor, b: SCRR_Tensor) -> SCRR_Tensor:
     
     return result
 
+
+@implements(torch.div)
+def scrr_div(x: Union[SCRR_Tensor, torch.Tensor], y: Union[SCRR_Tensor, torch.Tensor]) -> SCRR_Tensor:
+    """SCRR-реализация `torch.div` (деление)."""
+    x_scrr, y_scrr = _unify_args(x, y)
+    k = x_scrr.precision_k
+    
+    # Для деления используем приближение: x/y ≈ x * (1/y)
+    # Сначала вычисляем 1/y через обычные torch операции
+    y_float = y_scrr.to_float()
+    inv_y_float = 1.0 / y_float
+    inv_y_scrr = SCRR_Tensor.from_float(inv_y_float, k=k)
+    
+    # Затем умножаем x на 1/y
+    return scrr_mul(x_scrr, inv_y_scrr)
+
+
+@implements(torch.true_divide)
+def scrr_true_divide(x: Union[SCRR_Tensor, torch.Tensor], y: Union[SCRR_Tensor, torch.Tensor]) -> SCRR_Tensor:
+    """SCRR-реализация `torch.true_divide` (аналогично div)."""
+    return scrr_div(x, y)
+
+
 # Переопределяем, так как импортировали HANDLED_FUNCTIONS
 # и @implements уже заполнил его
 # Этот словарь теперь не нужен, так как декоратор делает всё сам.
@@ -211,6 +248,8 @@ SUPPORTED_OPS = [
     torch.add,
     torch.sub,
     torch.mul,
+    torch.div,
+    torch.true_divide,
     torch.matmul,
     torch.neg,
 ]

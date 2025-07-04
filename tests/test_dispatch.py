@@ -2,7 +2,7 @@
 
 import torch
 import pytest
-import mpmath as mp
+from mpmath import mp
 
 from scrr_fx._tensor import SCRR_Tensor, HANDLED_FUNCTIONS
 from tests.helpers import to_scrr, scrr_to_mp_value

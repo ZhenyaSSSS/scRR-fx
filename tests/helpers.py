@@ -1,5 +1,5 @@
 import torch
-import mpmath as mp
+from mpmath import mp
 from typing import List
 
 from scrr_fx import SCRR_Tensor

@@ -1,5 +1,5 @@
 import torch
-import mpmath as mp
+from mpmath import mp
 import pytest
 import hypothesis.strategies as st
 from hypothesis import given, settings

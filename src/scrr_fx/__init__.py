@@ -5,6 +5,18 @@
 и высокоуровневые операции.
 """
 
+import torch
+import warnings
+
+# Устанавливаем float64 как дефолтный dtype для всех новых тензоров
+if torch.get_default_dtype() != torch.float64:
+    warnings.warn(
+        f"SCRR-FX: Принудительно устанавливаю torch.set_default_dtype(torch.float64). "
+        f"Все новые тензоры будут float64. Если вы явно создаете float32, это может привести к неожиданным ошибкам.",
+        stacklevel=2
+    )
+    torch.set_default_dtype(torch.float64)
+
 from ._core import two_prod, two_sum  # noqa: F401
 from ._renorm import renormalize  # noqa: F401
 from ._tensor import SCRR_Tensor  # noqa: F401

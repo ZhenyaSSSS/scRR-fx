@@ -8,7 +8,7 @@
 
 import torch
 import pytest
-import mpmath as mp
+from mpmath import mp
 import numpy as np
 import hypothesis.strategies as st
 from hypothesis import given, settings
